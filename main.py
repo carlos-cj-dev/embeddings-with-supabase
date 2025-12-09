@@ -1,8 +1,15 @@
 from flask import Flask, request, jsonify
 from pathlib import Path
-from drive_downloader import get_drive_service, get_latest_file_change_details, download_and_extract_text, TOKEN_PATH
+from drive_downloader import get_drive_service, get_latest_file_change_details, download_and_extract_text, is_file_in_folder, TOKEN_PATH
 
 app = Flask(__name__)
+
+# --- Configuração da Pasta Alvo ---
+# Coloque aqui o ID da pasta do Google Drive que você deseja monitorar.
+# Exemplo de URL: https://drive.google.com/drive/folders/1QU1xjhvv5k_WAAI55IqaNIGYsUEJO42E
+# O ID é a parte após "folders/": 1QU1xjhvv5k_WAAI55IqaNIGYsUEJO42E
+TARGET_FOLDER_ID = '1QU1xjhvv5k_WAAI55IqaNIGYsUEJO42E'  # <-- ALTERE PARA O ID DA SUA PASTA
+# --------------------------------
 
 # --- Configuração de Filtros ---
 # Lista de MIME Types permitidos para extração de texto
@@ -83,7 +90,7 @@ def handle_drive_notification():
 
 
     # 3. OBTÉM DETALHES DO ARQUIVO ALTERADO VIA API DE CHANGES
-    file_id, mime_type, new_start_token = get_latest_file_change_details(DRIVE_SERVICE, last_processed_token)
+    file_id, mime_type, parents, new_start_token = get_latest_file_change_details(DRIVE_SERVICE, last_processed_token)
 
     if not file_id:
         print("| ⚠️ Nenhum arquivo de alteração encontrado no histórico desde o último token. Ignorando.")
@@ -93,8 +100,27 @@ def handle_drive_notification():
 
     print(f"| ID do Arquivo Detectado: {file_id}")
     print(f"| MIME Type Detectado: {mime_type}")
+    print(f"| Pasta(s) Pai: {parents}")
 
-    # 4. FILTRA POR TIPOS DE ARQUIVO PERMITIDOS
+    # 4. VERIFICA SE O ARQUIVO ESTÁ NA PASTA ALVO
+    # Primeiro, verificação rápida: se o arquivo está diretamente na pasta alvo
+    file_in_target_folder = TARGET_FOLDER_ID in parents
+    
+    # Se não está diretamente, verifica subpastas (mais lento, pois faz chamadas adicionais à API)
+    if not file_in_target_folder:
+        print(f"| 🔍 Verificando se o arquivo está em subpasta de '{TARGET_FOLDER_ID}'...")
+        file_in_target_folder = is_file_in_folder(DRIVE_SERVICE, file_id, TARGET_FOLDER_ID)
+    
+    if not file_in_target_folder:
+        print(f"| 🚫 Arquivo NÃO está na pasta alvo '{TARGET_FOLDER_ID}'. Ignorando.")
+        # Ainda assim, atualiza o token para não processar novamente
+        if new_start_token and new_start_token != last_processed_token:
+            save_token(new_start_token)
+        return jsonify({"status": "ignored_wrong_folder"}), 200
+    
+    print(f"| ✅ Arquivo está na pasta alvo '{TARGET_FOLDER_ID}'.")
+
+    # 5. FILTRA POR TIPOS DE ARQUIVO PERMITIDOS
     if mime_type in ALLOWED_MIME_TYPES:
         print(f"| ✅ Tipo de arquivo '{mime_type}' é permitido. Processando...")
         
@@ -105,7 +131,7 @@ def handle_drive_notification():
             mime_type
         )
         
-        # 5. EXIBIÇÃO E SALVAMENTO DO TEXTO EXTRAÍDO
+        # 6. EXIBIÇÃO E SALVAMENTO DO TEXTO EXTRAÍDO
         if extracted_text:
             text_preview = extracted_text[:200].replace('\n', ' ') + ('...' if len(extracted_text) > 200 else '')
             print("\n--- 📜 TEXTO EXTRAÍDO (Prévia) ---")
@@ -123,12 +149,12 @@ def handle_drive_notification():
         print(f"| 🚫 Tipo de arquivo '{mime_type}' não está na lista de processamento. Ignorando.")
 
 
-    # 6. SALVAR O NOVO TOKEN DA PÁGINA INICIAL (MUITO IMPORTANTE!)
+    # 7. SALVAR O NOVO TOKEN DA PÁGINA INICIAL (MUITO IMPORTANTE!)
     if new_start_token and new_start_token != last_processed_token:
         save_token(new_start_token)
 
 
-    # 7. RETORNO SUCESSO
+    # 8. RETORNO SUCESSO
     print("================================================")
     return jsonify({"status": "received_and_processed"}), 200
 

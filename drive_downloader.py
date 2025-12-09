@@ -48,12 +48,12 @@ def get_drive_service():
 
 def get_latest_file_change_details(service, page_token):
     """
-    Busca o ID e MIME Type do arquivo que disparou a notificação usando o Changes API.
+    Busca o ID, MIME Type e pastas pai do arquivo que disparou a notificação usando o Changes API.
     """
     try:
         response = service.changes().list(
             pageToken=page_token,
-            fields='newStartPageToken, changes(fileId, file(mimeType))',
+            fields='newStartPageToken, changes(fileId, file(mimeType, parents))',
             restrictToMyDrive=True,
             pageSize=1
         ).execute()
@@ -65,15 +65,82 @@ def get_latest_file_change_details(service, page_token):
             file_id = change.get('fileId')
             file = change.get('file', {})
             mime_type = file.get('mimeType')
+            parents = file.get('parents', [])  # Lista de IDs das pastas pai
             new_token = response.get('newStartPageToken') 
             
             if file_id and mime_type:
-                return file_id, mime_type, new_token 
+                return file_id, mime_type, parents, new_token 
         
     except Exception as e:
         print(f"❌ Erro ao buscar detalhes da mudança (Changes API): {e}")
 
-    return None, None, None
+    return None, None, [], None
+
+
+def is_file_in_folder(service, file_id, target_folder_id):
+    """
+    Verifica se um arquivo está dentro da pasta alvo (diretamente ou em subpastas).
+    Retorna True se o arquivo está na pasta alvo ou em qualquer subpasta dela.
+    """
+    try:
+        # Obtém informações do arquivo, incluindo suas pastas pai
+        file_info = service.files().get(
+            fileId=file_id,
+            fields='id, parents'
+        ).execute()
+        
+        parents = file_info.get('parents', [])
+        
+        # Verifica se o arquivo está diretamente na pasta alvo
+        if target_folder_id in parents:
+            return True
+        
+        # Se não está diretamente, verifica recursivamente se algum pai é a pasta alvo
+        for parent_id in parents:
+            if check_parent_hierarchy(service, parent_id, target_folder_id):
+                return True
+        
+        return False
+        
+    except Exception as e:
+        print(f"❌ Erro ao verificar hierarquia de pastas: {e}")
+        return False
+
+
+def check_parent_hierarchy(service, folder_id, target_folder_id, visited=None):
+    """
+    Verifica recursivamente se uma pasta está dentro da pasta alvo.
+    """
+    if visited is None:
+        visited = set()
+    
+    # Evita loops infinitos
+    if folder_id in visited:
+        return False
+    visited.add(folder_id)
+    
+    # Se chegamos na pasta alvo, retorna True
+    if folder_id == target_folder_id:
+        return True
+    
+    try:
+        folder_info = service.files().get(
+            fileId=folder_id,
+            fields='parents'
+        ).execute()
+        
+        parents = folder_info.get('parents', [])
+        
+        for parent_id in parents:
+            if parent_id == target_folder_id:
+                return True
+            if check_parent_hierarchy(service, parent_id, target_folder_id, visited):
+                return True
+        
+        return False
+        
+    except Exception as e:
+        return False
 
 
 def download_and_extract_text(service, file_id, file_mime_type):
